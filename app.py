@@ -1,115 +1,210 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
+from datetime import datetime
+import calendar
 
 # ตั้งค่าหน้าเว็บ
-st.set_page_config(page_title="Sales Dashboard", layout="wide")
+st.set_page_config(page_title="Sales Dashboard Pro Max", layout="wide")
 
-st.title("📊 แดชบอร์ดรายงานการขายรายบุคคล")
+st.title("📊 รายงานการขาย: Forecast & Analytics")
 st.markdown("---")
 
-# --- ส่วน Sidebar: ตั้งค่า Target ---
-st.sidebar.header("1. ข้อมูลเป้าหมาย (Target)")
-# ทางเลือก 1: ใส่ลิงก์ Google Sheets (CSV)
-target_url = st.sidebar.text_input("วางลิงก์ Google Sheets (CSV) ที่นี่:", help="ลิงก์จากเมนู File > Share > Publish to web > เลือกเป็น CSV")
+# --- ส่วน Sidebar: อัปโหลดไฟล์ ---
+st.sidebar.header("📂 อัปโหลดไฟล์ข้อมูล")
+target_file = st.sidebar.file_uploader("1. อัปโหลดไฟล์เป้าหมาย (Target)", type=['csv', 'xlsx'])
+data_file = st.sidebar.file_uploader("2. อัปโหลดไฟล์ยอดขาย (Data)", type=['csv', 'xlsx'])
 
-# ทางเลือก 2: อัปโหลดไฟล์ Target (กรณีไม่ได้ใช้ Google Sheets)
-target_file = st.sidebar.file_uploader("หรืออัปโหลดไฟล์ Target (Excel/CSV)", type=['xlsx', 'csv'])
-
-# --- ส่วน Main: อัปโหลด Data ---
-st.header("2. อัปโหลดข้อมูลดิบ (Raw Data)")
-uploaded_file = st.file_uploader("ลากไฟล์ Data (Excel/CSV) มาวางที่นี่", type=['xlsx', 'csv'])
-
-# --- ฟังก์ชันทำความสะอาดตัวเลข (ลบลูกน้ำ) ---
+# ฟังก์ชันทำความสะอาดตัวเลข
 def clean_currency(x):
     if isinstance(x, str):
-        return float(x.replace(',', '').replace(' ', ''))
+        clean_str = x.replace(',', '').replace(' ', '').strip()
+        if clean_str == '-' or clean_str == '':
+            return 0.0
+        return float(clean_str)
     return x
 
 # --- เริ่มการประมวลผล ---
-if uploaded_file is not None:
+if target_file and data_file:
     try:
-        # 1. โหลดข้อมูล Raw Data
-        if uploaded_file.name.endswith('.csv'):
-            df_data = pd.read_csv(uploaded_file)
+        # 1. โหลดข้อมูล
+        if target_file.name.endswith('.csv'):
+            df_target = pd.read_csv(target_file)
         else:
-            df_data = pd.read_excel(uploaded_file)
+            df_target = pd.read_excel(target_file)
 
-        # 2. โหลดข้อมูล Target
-        df_target = None
-        if target_url:
-            df_target = pd.read_csv(target_url)
-        elif target_file:
-            if target_file.name.endswith('.csv'):
-                df_target = pd.read_csv(target_file)
-            else:
-                df_target = pd.read_excel(target_file)
+        if data_file.name.endswith('.csv'):
+            df_data = pd.read_csv(data_file)
+        else:
+            df_data = pd.read_excel(data_file)
+
+        # 2. Data Cleaning
+        # Target
+        if pd.isna(df_target.iloc[0]['ชื่อพนักงาน']) or str(df_target.iloc[0]['Total']) == '-':
+             df_target = df_target.iloc[1:].copy()
+        df_target['Total'] = df_target['Total'].apply(clean_currency)
+
+        # Data
+        df_data['Total Price'] = df_data['Total Price'].apply(clean_currency)
         
-        if df_target is None:
-            st.warning("⚠️ กรุณาใส่ลิงก์ Google Sheets หรืออัปโหลดไฟล์ Target ก่อน")
+        # จัดการวันที่ (สำคัญมากสำหรับ Daily & Forecast)
+        if 'Doc Date' in df_data.columns:
+            # แปลงเป็น datetime (พยายามรองรับหลายรูปแบบ)
+            df_data['Doc Date'] = pd.to_datetime(df_data['Doc Date'], dayfirst=True, errors='coerce')
+            # สร้างคอลัมน์วันที่แบบไม่มีเวลา
+            df_data['DateOnly'] = df_data['Doc Date'].dt.date
+
+        # ==========================================
+        # การคำนวณ FORECAST
+        # ==========================================
+        # หาวันที่ล่าสุดที่มีการขาย
+        last_date = df_data['Doc Date'].max()
+        days_passed = last_date.day
+        
+        # หาวันสุดท้ายของเดือนนั้น
+        _, num_days_in_month = calendar.monthrange(last_date.year, last_date.month)
+        
+        total_sales_now = df_data['Total Price'].sum()
+        total_target_team = df_target['Total'].sum()
+        
+        # สูตร Forecast: (ยอดขายปัจจุบัน / วันที่ผ่านมา) * วันทั้งหมดในเดือน
+        if days_passed > 0:
+            forecast_sales = (total_sales_now / days_passed) * num_days_in_month
         else:
-            # --- Data Processing ---
-            # ปรับชื่อคอลัมน์ให้ตรงกัน (แก้ไขชื่อตามไฟล์จริงของคุณได้ที่นี่)
-            # สมมติ Data ใช้ 'Officer (Name)' และ Target ใช้ 'ชื่อพนักงาน'
-            
-            # แปลงตัวเลข (ลบลูกน้ำ)
-            col_sales_data = 'Total Price' # ชื่อคอลัมน์ยอดขายใน Data
-            col_staff_data = 'Officer (Name)' # ชื่อคอลัมน์พนักงานใน Data
-            
-            col_target_target = 'Total' # ชื่อคอลัมน์เป้าใน Target
-            col_staff_target = 'ชื่อพนักงาน' # ชื่อคอลัมน์พนักงานใน Target
+            forecast_sales = 0
 
-            # Clean Data
-            df_data[col_sales_data] = df_data[col_sales_data].apply(clean_currency)
-            df_target[col_target_target] = df_target[col_target_target].apply(clean_currency)
+        # --- สร้าง Tabs แยกหัวข้อ ---
+        tab1, tab2, tab3, tab4 = st.tabs([
+            "📈 ภาพรวม & Forecast", 
+            "📅 ยอดขายรายวัน (Daily)", 
+            "📦 แยกหมวดหมู่ (Category)", 
+            "📋 รายละเอียดรายบุคคล"
+        ])
 
-            # รวมยอดขายตามพนักงาน
-            sales_summary = df_data.groupby(col_staff_data)[col_sales_data].sum().reset_index()
-            sales_summary.rename(columns={col_sales_data: 'Actual Sales'}, inplace=True)
-
-            # เชื่อมกับ Target
-            report = pd.merge(sales_summary, df_target[[col_staff_target, col_target_target]], 
-                              left_on=col_staff_data, right_on=col_staff_target, how='left')
+        # ==========================================
+        # TAB 1: ภาพรวม & Forecast
+        # ==========================================
+        with tab1:
+            st.subheader(f"สรุปยอดเดือน {last_date.strftime('%B %Y')}")
             
-            report.rename(columns={col_target_target: 'Target Sales'}, inplace=True)
+            # Metrics 4 ช่อง
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("ยอดขายปัจจุบัน", f"{total_sales_now:,.0f} บาท")
+            c2.metric("เป้าหมายรวม", f"{total_target_team:,.0f} บาท")
+            c3.metric("% ถึงเป้า (Actual)", f"{(total_sales_now/total_target_team*100):.2f}%")
             
-            # คำนวณ %
-            report['% Achieved'] = (report['Actual Sales'] / report['Target Sales']) * 100
-            report['% Achieved'] = report['% Achieved'].fillna(0).round(2)
-
-            # --- แสดงผล Dashboard ---
-            
-            # 1. ภาพรวม (Metrics)
-            total_sales = report['Actual Sales'].sum()
-            total_target = report['Target Sales'].sum()
-            total_achieved = (total_sales / total_target * 100) if total_target > 0 else 0
-
-            c1, c2, c3 = st.columns(3)
-            c1.metric("ยอดขายรวมทั้งหมด", f"{total_sales:,.0f} บาท")
-            c2.metric("เป้าหมายรวม", f"{total_target:,.0f} บาท")
-            c3.metric("% ความสำเร็จรวม", f"{total_achieved:.2f}%", delta_color="normal")
+            # ช่อง Forecast ใส่สีให้เด่น
+            delta_forecast = forecast_sales - total_target_team
+            c4.metric("คาดการณ์จบเดือน (Forecast)", f"{forecast_sales:,.0f} บาท", 
+                      delta=f"{delta_forecast:,.0f} เทียบเป้า")
 
             st.markdown("---")
+            
+            # กราฟเปรียบเทียบรายบุคคล
+            st.write("#### 🏆 อันดับยอดขายเทียบเป้า (รายบุคคล)")
+            sales_summary = df_data.groupby('Officer (Name)')['Total Price'].sum().reset_index()
+            sales_summary.rename(columns={'Total Price': 'Actual Sales'}, inplace=True)
+            report = pd.merge(df_target, sales_summary, left_on='ชื่อพนักงาน', right_on='Officer (Name)', how='left')
+            report['Actual Sales'] = report['Actual Sales'].fillna(0)
+            
+            # Sort ตามยอดขาย
+            report = report.sort_values(by='Actual Sales', ascending=True)
 
-            # 2. กราฟแท่ง (Bar Chart)
-            st.subheader("📈 เทียบยอดขาย vs เป้าหมาย รายบุคคล")
-            
-            # จัดเตรียมข้อมูลสำหรับกราฟ (Melt data เพื่อให้พล็อตกราฟคู่ได้ง่าย)
-            chart_data = report[[col_staff_data, 'Actual Sales', 'Target Sales']].melt(id_vars=col_staff_data, var_name='Type', value_name='Amount')
-            
-            fig = px.bar(chart_data, x=col_staff_data, y='Amount', color='Type', 
-                         barmode='group', text_auto='.2s',
-                         color_discrete_map={'Actual Sales': '#28a745', 'Target Sales': '#ffc107'})
+            fig = go.Figure()
+            fig.add_trace(go.Bar(
+                y=report['ชื่อพนักงาน'], x=report['Total'],
+                name='เป้าหมาย (Target)', orientation='h',
+                marker=dict(color='rgba(200, 200, 200, 0.5)')
+            ))
+            fig.add_trace(go.Bar(
+                y=report['ชื่อพนักงาน'], x=report['Actual Sales'],
+                name='ยอดขายจริง (Actual)', orientation='h',
+                marker=dict(color='#28a745'),
+                text=report['Actual Sales'], texttemplate='%{text:,.2s}', textposition='inside'
+            ))
+            fig.update_layout(barmode='overlay', height=600)
             st.plotly_chart(fig, use_container_width=True)
 
-            # 3. ตารางรายละเอียด (Table)
-            st.subheader("📋 รายละเอียดรายบุคคล")
-            st.dataframe(report.style.format({
-                "Actual Sales": "{:,.2f}", 
-                "Target Sales": "{:,.2f}", 
-                "% Achieved": "{:.2f}%"
-            }))
+        # ==========================================
+        # TAB 2: ยอดขายรายวัน (Daily Trend)
+        # ==========================================
+        with tab2:
+            st.subheader("📅 แนวโน้มยอดขายรายวัน")
+            
+            daily_sales = df_data.groupby('DateOnly')['Total Price'].sum().reset_index()
+            
+            fig_daily = px.line(daily_sales, x='DateOnly', y='Total Price', markers=True,
+                                title='Daily Sales Performance',
+                                labels={'DateOnly': 'วันที่', 'Total Price': 'ยอดขาย (บาท)'})
+            fig_daily.update_traces(line_color='#007bff', line_width=3)
+            st.plotly_chart(fig_daily, use_container_width=True)
+            
+            # ตารางข้อมูลรายวัน
+            with st.expander("ดูตารางข้อมูลรายวัน"):
+                st.dataframe(daily_sales.style.format({'Total Price': '{:,.2f}'}))
+
+        # ==========================================
+        # TAB 3: แยกหมวดหมู่ (Category)
+        # ==========================================
+        with tab3:
+            st.subheader("📦 สัดส่วนยอดขายตามหมวดหมู่สินค้า")
+            
+            # เช็คว่ามีคอลัมน์ Category ไหม
+            cat_col = 'Category (Name)' if 'Category (Name)' in df_data.columns else None
+            
+            if cat_col:
+                cat_sales = df_data.groupby(cat_col)['Total Price'].sum().reset_index().sort_values(by='Total Price', ascending=False)
+                
+                c_chart, c_table = st.columns([2, 1])
+                
+                with c_chart:
+                    fig_cat = px.pie(cat_sales, values='Total Price', names=cat_col, 
+                                     hole=0.4, title='Sales Share by Category')
+                    st.plotly_chart(fig_cat, use_container_width=True)
+                    
+                with c_table:
+                    st.write("รายละเอียด:")
+                    st.dataframe(cat_sales.style.format({'Total Price': '{:,.2f}'}), hide_index=True)
+            else:
+                st.error("ไม่พบคอลัมน์ 'Category (Name)' ในไฟล์ข้อมูล")
+
+        # ==========================================
+        # TAB 4: รายละเอียดรายบุคคล
+        # ==========================================
+        with tab4:
+            st.header("เจาะลึกรายบุคคล")
+            staff_list = sorted(df_target['ชื่อพนักงาน'].dropna().unique().tolist())
+            selected_staff = st.selectbox("เลือกพนักงาน:", staff_list)
+
+            if selected_staff:
+                staff_data = df_data[df_data['Officer (Name)'] == selected_staff].copy()
+                
+                # แสดง KPI Card ส่วนตัว
+                my_total = staff_data['Total Price'].sum()
+                my_target_row = report[report['ชื่อพนักงาน'] == selected_staff]
+                my_target = my_target_row['Total'].values[0] if not my_target_row.empty else 0
+                
+                # คำนวณ Forecast ส่วนตัว
+                my_forecast = (my_total / days_passed * num_days_in_month) if days_passed > 0 else 0
+                
+                m1, m2, m3 = st.columns(3)
+                m1.metric("ยอดขายจริง", f"{my_total:,.0f}")
+                m2.metric("เป้าหมาย", f"{my_target:,.0f}")
+                m3.metric("Forecast จบเดือน", f"{my_forecast:,.0f}", delta=f"{my_forecast - my_target:,.0f}")
+                
+                st.subheader("ประวัติการขาย")
+                if not staff_data.empty:
+                    show_cols = ['Doc Date', 'Product (Name)', 'Category (Name)', 'Total Price', 'Serial']
+                    valid_cols = [c for c in show_cols if c in staff_data.columns]
+                    
+                    st.dataframe(staff_data[valid_cols].sort_values('Doc Date', ascending=False).style.format({
+                        'Total Price': '{:,.2f}',
+                        'Doc Date': lambda t: t.strftime('%d/%m/%Y %H:%M')
+                    }), use_container_width=True)
 
     except Exception as e:
         st.error(f"เกิดข้อผิดพลาด: {e}")
-        st.info("คำแนะนำ: ตรวจสอบว่าชื่อคอลัมน์ในไฟล์ตรงกับในโค้ดหรือไม่ (Total Price, Officer (Name), etc.)")
+
+else:
+    st.info("👈 กรุณาอัปโหลดไฟล์ Target และ Data เพื่อเริ่มใช้งาน")
